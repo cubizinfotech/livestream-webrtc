@@ -112,4 +112,4 @@ app.get('/viewer', (req, res) =>
     res.sendFile(path.join(__dirname, 'public', 'viewer.html'))
 );
 
-server.listen(3069, () => console.log('Server started on port 3069, URL: http://44.216.74.109:3069'));
+server.listen(3069, () => console.log('Server started on port 3069.'));
