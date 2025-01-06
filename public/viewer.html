@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Viewer</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+    <style>
+        #main-content { width: 100%; height: 100%; object-fit: cover; }
+        #camera-preview { position: absolute; bottom: 10px; right: 10px; width: 150px; height: 150px; border: 2px solid #ccc; }
+    </style>
+</head>
+<body>
+    <div class="container-fluid h-100">
+        <div class="row" style="height: 100vh;">
+            <div class="col-8 bg-light border border-4" style="height: 93%;"> 
+                <div id="main-content" class="h-100">
+                    <video id="video" autoplay controls class="w-100 h-100"></video>
+                </div>
+
+                <div class="position-absolute bottom-0 right-0 m-3" id="camera-preview" style="display: none;">
+                    <video id="camera" width="150" height="150" autoplay muted></video>
+                </div>
+
+                <div class="btn-group pt-2" role="group" aria-label="Meeting Controls" style="width: 100%;">
+                    <button type="button" id="sound-toggle" class="btn btn-primary ml-1 rounded"><i class="fas fa-volume-up"></i> Sound</button>
+                    <button type="button" id="join-stream" class="btn btn-success ml-1 rounded"><i class="fas fa-play"></i> Join Stream</button>
+                    <button type="button" id="leave-stream" class="btn btn-danger ml-1 rounded" style="display:none;"><i class="fas fa-stop"></i> Leave Stream</button>
+                </div>
+            </div>
+
+            <div class="col-4 h-100">
+                <div class="h-100 p-3">
+                    <h4>Chat</h4>
+                    <div id="chat-messages" class="overflow-auto bg-secondary rounded" style="height: 88%;"> 
+                        <!-- Messages will be added dynamically -->
+                    </div>
+                    <div class="input-group pt-2">
+                        <input type="text" id="message-input" class="form-control" placeholder="Type your message...">
+                        <div class="input-group-append">
+                            <button class="btn btn-primary" id="send-message" type="button">Send</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.5.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.min.js"></script>
+
+    <style>
+        .message-container {
+            margin: 5px;
+            border-radius: 5px;
+            padding: 10px;
+        }
+
+        .sender {
+            background-color: #DCF8C6;
+            text-align: right;
+        }
+
+        .receiver {
+            background-color: #E6E6FA;
+            text-align: left;
+        }
+
+        .time {
+            font-size: smaller;
+            color: gray;
+            margin-top: 5px;
+            display: block;
+        }
+
+        video {
+            object-fit: cover;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+
+    <!-- User Info Modal -->
+    <div class="modal" id="userInfoModal" tabindex="-1" role="dialog">
+        <div class="modal-dialog modal-dialog-centered" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Enter Your Information</h5>
+                </div>
+                <div class="modal-body">
+                    <form id="userInfoForm">
+                        <div class="form-group">
+                            <label for="userName">Name</label>
+                            <input type="text" class="form-control" id="userName" placeholder="Enter your name" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="userEmail">Email</label>
+                            <input type="email" class="form-control" id="userEmail" placeholder="Enter your email" required>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="submit" form="userInfoForm" class="btn btn-primary">Submit</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let userInfo = {};
+        let socket = io();
+        let peer;
+        let remoteStream;
+        let soundEnabled = true;
+
+        window.onload = () => {
+            promptForUserInfo();
+
+            document.getElementById('join-stream').onclick = joinStream;
+            document.getElementById('leave-stream').onclick = leaveStream;
+            document.getElementById('sound-toggle').onclick = toggleSound;
+            document.getElementById('send-message').onclick = sendMessage;
+
+            // Handle incoming chat messages
+            socket.on('chat-message', message => {
+                displayMessage(message);
+            });
+        };
+
+        // Prompt user for email and name
+        function promptForUserInfo() {
+            const savedName = localStorage.getItem('userName');
+            const savedEmail = localStorage.getItem('userEmail');
+
+            if (savedName && savedEmail) {
+                userInfo = { name: savedName, email: savedEmail };
+            } else {
+                // Show the modal
+                const modal = document.getElementById('userInfoModal');
+                $(modal).modal({ backdrop: 'static', keyboard: false });
+
+                // Handle form submission
+                document.getElementById('userInfoForm').onsubmit = (e) => {
+                    e.preventDefault();
+                    const name = document.getElementById('userName').value.trim();
+                    const email = document.getElementById('userEmail').value.trim();
+
+                    if (name && email) {
+                        userInfo = { name, email };
+                        localStorage.setItem('userName', name);
+                        localStorage.setItem('userEmail', email);
+                        $(modal).modal('hide'); // Close the modal
+                    } else {
+                        alert('Please fill out all fields.');
+                    }
+                };
+            }
+        }
+
+        async function joinStream() {
+            const button = document.getElementById('join-stream');
+            button.style.display = "none";
+            document.getElementById('leave-stream').style.display = "inline-block";
+
+            // Fetch SDP to start watching the broadcast
+            fetchBroadcastStream();
+        }
+
+        async function fetchBroadcastStream() {
+            // Create a new peer connection
+            peer = createPeer();
+            try {
+                // Add a video transceiver in recvonly mode
+                peer.addTransceiver("video", { direction: "recvonly" });
+            } catch (error) {
+                console.error("Error adding transceiver:", error);
+            }
+        }
+
+        function createPeer() {
+            const peer = new RTCPeerConnection({
+                iceServers: [
+                    {
+                        urls: "stun:stun.stunprotocol.org"
+                    }
+                ]
+            });
+
+            /**
+            // Log ICE Candidate gathering
+            peer.onicecandidate = (event) => {
+                if (event.candidate) {
+                    console.log("New ICE candidate:", event.candidate);
+
+                    // Send this candidate to the signaling server
+                    socket.emit('ice-candidate', event.candidate);
+                }
+            };
+            **/
+
+            // Handle remote track events
+            peer.ontrack = handleTrackEvent;
+
+            // Trigger negotiation
+            peer.onnegotiationneeded = () => handleNegotiationNeededEvent(peer);
+
+            return peer;
+        }
+
+        async function handleNegotiationNeededEvent(peer) {
+            try {
+                console.log("Creating offer...");
+                const offer = await peer.createOffer();
+                await peer.setLocalDescription(offer);
+
+                const payload = {
+                    sdp: peer.localDescription
+                };
+
+                console.log("Sending offer to server...");
+                const { data } = await axios.post('/consumer', payload);
+                console.log("Received SDP answer from server:", data.sdp);
+
+                const desc = new RTCSessionDescription(data.sdp);
+                await peer.setRemoteDescription(desc);
+                console.log("Remote SDP applied successfully.");
+
+                //**
+                peer.onicecandidate = function (event) {
+                    if (event.candidate) {
+                        socket.emit('ice-candidate', event.candidate);
+                    }
+                };
+                //**
+            } catch (error) {
+                console.error("Error during negotiation:", error);
+            }
+        }
+
+        socket.on('ice-candidate', (candidate) => {
+            peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        });
+
+        function handleTrackEvent(event) {
+            console.log("Track event received:", event);
+
+            if (event.streams && event.streams[0]) {
+                remoteStream = event.streams[0];
+                const videoElement = document.getElementById('video');
+                videoElement.srcObject = remoteStream;
+                console.log("Remote stream attached to video element.");
+            } else {
+                console.warn("No streams found in track event.");
+            }
+        }
+
+        function leaveStream() {
+            const button = document.getElementById('leave-stream');
+            button.style.display = "none";
+            document.getElementById('join-stream').style.display = "inline-block";
+
+            if (peer) {
+                peer.close();
+                peer = null;
+            }
+            if (remoteStream) {
+                remoteStream.getTracks().forEach(track => track.stop());
+                remoteStream = null;
+            }
+        }
+
+        function toggleSound() {
+            soundEnabled = !soundEnabled;
+            const button = document.getElementById('sound-toggle');
+            if (soundEnabled) {
+                remoteStream.getAudioTracks().forEach(track => track.enabled = true);
+                button.textContent = 'Sound Off';
+                button.classList.replace('btn-primary', 'btn-secondary');
+            } else {
+                remoteStream.getAudioTracks().forEach(track => track.enabled = false);
+                button.textContent = 'Sound On';
+                button.classList.replace('btn-secondary', 'btn-primary');
+            }
+        }
+
+        // Send a chat message
+        function sendMessage() {
+            const messageInput = document.getElementById('message-input');
+            const text = messageInput.value.trim();
+            const time = new Date().toLocaleTimeString();
+
+            if (text) {
+                const message = {
+                    text,
+                    time,
+                    sender: userInfo.name,
+                    email: userInfo.email
+                };
+
+                socket.emit('chat-message', message);
+                messageInput.value = ''; // Clear the input
+            }
+        }
+
+        // Display a chat message
+        function displayMessage(message) {
+            const chatMessages = document.getElementById('chat-messages');
+
+            const messageContainer = document.createElement('div');
+            messageContainer.classList.add('message-container', message.sender === userInfo.name ? 'sender' : 'receiver');
+
+            messageContainer.innerHTML = `
+                <div class="message">
+                    <p><strong>${message.sender}</strong> (${message.email}):</p>
+                    <p>${message.text}</p>
+                    <span class="time">${message.time}</span>
+                </div>
+            `;
+
+            chatMessages.appendChild(messageContainer);
+            chatMessages.scrollTop = chatMessages.scrollHeight; // Scroll to the latest message
+        }
+    </script>
+</body>
+</html>

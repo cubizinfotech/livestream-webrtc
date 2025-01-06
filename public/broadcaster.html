@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Broadcaster</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+    <style>
+        #main-content { width: 100%; height: 100%; object-fit: cover; }
+        #camera-preview { position: absolute; bottom: 10px; right: 10px; width: 150px; height: 150px; border: 2px solid #ccc; }
+    </style>
+</head>
+<body>
+    <div class="container-fluid h-100">
+        <div class="row" style="height: 100vh;">
+            <div class="col-8 bg-light border border-4" style="height: 93%;">
+                
+                <div id="main-content" class="h-100">
+                    <video id="video" autoplay muted class="w-100 h-100"></video>
+                </div>
+                <div class="position-absolute bottom-0 right-0 m-3 border border-primary" id="camera-preview" style="display: none;">
+                    <video id="camera" width="150" height="150" autoplay muted></video>
+                </div>
+
+                <div class="btn-group pt-2" role="group" aria-label="Meeting Controls" style="width: 100%;">
+                    <button type="button" id="camera-toggle" class="btn btn-primary ml-1 rounded"><i class="fas fa-video"></i> Camera</button>
+                    <button type="button" id="screen-share-button" class="btn btn-primary ml-1 rounded"><i class="fas fa-desktop"></i> Share Screen</button>
+                    <button type="button" id="start-streaming" class="btn btn-success ml-1 rounded"><i class="fas fa-play"></i> Start Streaming</button>
+                    <button type="button" id="stop-streaming" class="btn btn-danger ml-1 rounded" style="display:none;"><i class="fas fa-stop"></i> Stop Streaming</button>
+                    <button type="button" id="start-recording" class="btn btn-info ml-1 rounded"><i class="fas fa-record-vinyl"></i> Start Recording</button>
+                    <button type="button" id="stop-recording" class="btn btn-warning ml-1 rounded" style="display:none;"><i class="fas fa-stop-circle"></i> Stop Recording</button>
+                </div>
+            </div>
+
+            <div class="col-4 h-100">
+                <div class="h-100 p-3">
+                    <h4>Chat</h4>
+                    <div id="chat-messages" class="overflow-auto bg-secondary rounded" style="height: 88%;"> 
+                        <!-- Messages will be added dynamically -->
+                    </div>
+                    <div class="input-group pt-2">
+                        <input type="text" id="message-input" class="form-control" placeholder="Type your message...">
+                        <div class="input-group-append">
+                            <button class="btn btn-primary" id="send-message" type="button">Send</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.5.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.min.js"></script>
+
+    <style>
+        .message-container {
+            margin: 5px;
+            border-radius: 5px;
+            padding: 10px;
+        }
+
+        .sender {
+            background-color: #DCF8C6;
+            text-align: right;
+        }
+
+        .receiver {
+            background-color: #E6E6FA;
+            text-align: left;
+        }
+
+        .time {
+            font-size: smaller;
+            color: gray;
+            margin-top: 5px;
+            display: block;
+        }
+
+        video {
+            object-fit: cover;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+
+    <!-- User Info Modal -->
+    <div class="modal" id="userInfoModal" tabindex="-1" role="dialog">
+        <div class="modal-dialog modal-dialog-centered" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Enter Your Information</h5>
+                </div>
+                <div class="modal-body">
+                    <form id="userInfoForm">
+                        <div class="form-group">
+                            <label for="userName">Name</label>
+                            <input type="text" class="form-control" id="userName" placeholder="Enter your name" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="userEmail">Email</label>
+                            <input type="email" class="form-control" id="userEmail" placeholder="Enter your email" required>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="submit" form="userInfoForm" class="btn btn-primary">Submit</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let userInfo = {};
+        let currentStream;
+        let cameraStream;
+        let peer;
+        let socket = io();
+        let mediaRecorder;
+        let recordedChunks = [];
+
+        window.onload = () => {
+            promptForUserInfo();
+
+            var video = document.getElementById("video");
+            var camera = document.getElementById("camera");
+            document.getElementById('camera-toggle').onclick = toggleCamera;          // Camera toggle button
+            document.getElementById('screen-share-button').onclick = startScreenShare; // Screen share button
+            document.getElementById('start-streaming').onclick = startStreaming;      // Start streaming button
+            document.getElementById('stop-streaming').onclick = stopStreaming;        // Stop streaming button
+            document.getElementById('start-recording').onclick = startRecording;      // Start recording button
+            document.getElementById('stop-recording').onclick = stopRecording;        // Stop recording button
+            document.getElementById('send-message').onclick = sendMessage;            // Send message button
+
+            // Handle incoming chat messages
+            socket.on('chat-message', message => {
+                displayMessage(message);
+            });
+        };
+
+        // Prompt user for email and name
+        function promptForUserInfo() {
+            const savedName = localStorage.getItem('userName');
+            const savedEmail = localStorage.getItem('userEmail');
+
+            if (savedName && savedEmail) {
+                userInfo = { name: savedName, email: savedEmail };
+            } else {
+                // Show the modal
+                const modal = document.getElementById('userInfoModal');
+                $(modal).modal({ backdrop: 'static', keyboard: false });
+
+                // Handle form submission
+                document.getElementById('userInfoForm').onsubmit = (e) => {
+                    e.preventDefault();
+                    const name = document.getElementById('userName').value.trim();
+                    const email = document.getElementById('userEmail').value.trim();
+
+                    if (name && email) {
+                        userInfo = { name, email };
+                        localStorage.setItem('userName', name);
+                        localStorage.setItem('userEmail', email);
+                        $(modal).modal('hide'); // Close the modal
+                    } else {
+                        alert('Please fill out all fields.');
+                    }
+                };
+            }
+        }
+
+        async function startWebcamStream() {
+            try {
+                const constraints = {
+                    // video: {
+                    //     width: { ideal: 1280 },
+                    //     height: { ideal: 720 }
+                    // },
+                    video: true,
+                    audio: true
+                };
+
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+                const videoTrack = stream.getVideoTracks()[0];
+                const settings = videoTrack.getSettings();
+                console.log("Resolution:", settings.width, settings.height);
+
+                if (!currentStream) {
+                    const cameraPreview = document.getElementById('camera-preview');
+                    cameraPreview.style.display = "none";
+                    video.srcObject = stream;
+                } else {
+                    const cameraPreview = document.getElementById('camera-preview');
+                    cameraPreview.style.display = "block";
+                    camera.srcObject = stream;
+                }
+
+                if (peer) {
+                    const sender = peer.getSenders().find(sender => sender.track.kind === "video");
+                    if (sender) {
+                        sender.replaceTrack(videoTrack);
+                    }
+                }
+
+                cameraStream = stream;
+            } catch (err) {
+                console.error("Error accessing media devices:", err);
+            }
+        }
+
+        function toggleCamera() {
+            const button = document.getElementById('camera-toggle');
+            if (cameraStream) {
+                const videoTrack = cameraStream.getVideoTracks()[0];
+                videoTrack.enabled = !videoTrack.enabled;
+                button.textContent =  'Camera On';
+            } else {
+                button.textContent =  'Camera Off';
+                startWebcamStream();
+            }
+        }
+
+        async function startScreenShare() {
+            try {
+                const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+                handleStream(stream);
+            } catch (err) {
+                console.error("Error sharing screen:", err);
+            }
+        }
+
+        function handleStream(stream) {
+            const videoTrack = stream.getVideoTracks()[0];
+            const settings = videoTrack.getSettings();
+
+            console.log("Resolution:", settings.width, settings.height);
+
+            const constraints = {
+                // video: {
+                //     width: { ideal: 1280 },
+                //     height: { ideal: 720 }
+                // },
+                video: true,
+                audio: true
+            };
+
+            videoTrack.applyConstraints(constraints).then(() => {
+                console.log("Constraints applied:", constraints);
+            }).catch(err => {
+                console.error("Error applying constraints:", err);
+            });
+
+            video.srcObject = stream;
+
+            if (cameraStream) {
+                const cameraPreview = document.getElementById('camera-preview');
+                cameraPreview.style.display = "block";
+                camera.srcObject = cameraStream;
+            }
+
+            if (peer) {
+                const sender = peer.getSenders().find(sender => sender.track.kind === "video");
+                if (sender) {
+                    sender.replaceTrack(videoTrack);
+                }
+            }
+
+            currentStream = stream;
+        }
+
+        function createPeer() {
+            const peer = new RTCPeerConnection({
+                iceServers: [{ urls: "stun:stun.stunprotocol.org" }]
+            });
+
+            // Log ICE connection state changes
+            peer.oniceconnectionstatechange = () => {
+                console.log("ICE Connection State (Broadcaster):", peer.iceConnectionState);
+            };
+
+            /**
+            // Handle ICE candidates
+            peer.onicecandidate = event => {
+                if (event.candidate) {
+                    console.log("New ICE Candidate (Broadcaster):", event.candidate);
+                    // Send this candidate to the signaling server
+                    socket.emit('ice-candidate', event.candidate);
+                }
+            };
+            **/
+
+            peer.onnegotiationneeded = () => handleNegotiationNeededEvent(peer);
+
+            return peer;
+        }
+
+        async function handleNegotiationNeededEvent(peer) {
+            try {
+                const offer = await peer.createOffer();
+                await peer.setLocalDescription(offer);
+                const payload = { sdp: peer.localDescription };
+
+                const { data } = await axios.post('/broadcast', payload);
+                const desc = new RTCSessionDescription(data.sdp);
+                peer.setRemoteDescription(desc).catch(e => console.error(e));
+
+                //**
+                peer.onicecandidate = function (event) {
+                    if (event.candidate) {
+                        socket.emit('ice-candidate', event.candidate);
+                    }
+                };
+
+                socket.on('ice-candidate', candidate => {
+                    peer.addIceCandidate(new RTCIceCandidate(candidate));
+                });
+                //**
+            } catch (error) {
+                console.error("Error during negotiation:", error);
+            }
+        }
+
+        async function startStreaming() {
+            const button = document.getElementById('start-streaming');
+            button.style.display = "none";
+            document.getElementById('stop-streaming').style.display = "inline-block";
+
+            if (!peer) {
+                peer = createPeer();
+                if (currentStream) {
+                    currentStream.getTracks().forEach(track => peer.addTrack(track, currentStream));
+                }
+                if (cameraStream) {
+                    cameraStream.getTracks().forEach(track => peer.addTrack(track, cameraStream));
+                }
+            }
+        }
+
+        function stopStreaming() {
+            const button = document.getElementById('stop-streaming');
+            button.style.display = "none";
+            document.getElementById('start-streaming').style.display = "inline-block";
+
+            if (peer) {
+                peer.close();
+                peer = null;
+            }
+
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => track.stop());
+                currentStream = null;
+            }
+
+            if (cameraStream) {
+                cameraStream.getTracks().forEach(track => track.stop());
+                cameraStream = null;
+            }
+        }
+
+        // Send a chat message
+        function sendMessage() {
+            const messageInput = document.getElementById('message-input');
+            const text = messageInput.value.trim();
+            const time = new Date().toLocaleTimeString();
+
+            if (text) {
+                const message = {
+                    text,
+                    time,
+                    sender: userInfo.name,
+                    email: userInfo.email
+                };
+
+                socket.emit('chat-message', message);
+                messageInput.value = ''; // Clear the input
+            }
+        }
+
+        // Display a chat message
+        function displayMessage(message) {
+            const chatMessages = document.getElementById('chat-messages');
+
+            const messageContainer = document.createElement('div');
+            messageContainer.classList.add('message-container', message.sender === userInfo.name ? 'sender' : 'receiver');
+
+            messageContainer.innerHTML = `
+                <div class="message">
+                    <p><strong>${message.sender}</strong> (${message.email}):</p>
+                    <p>${message.text}</p>
+                    <span class="time">${message.time}</span>
+                </div>
+            `;
+
+            chatMessages.appendChild(messageContainer);
+            chatMessages.scrollTop = chatMessages.scrollHeight; // Scroll to the latest message
+        }
+
+        // Start recording
+        function startRecording() {
+            const streamToRecord = document.getElementById("video").srcObject;
+            // const streamToRecord = currentStream;
+            mediaRecorder = new MediaRecorder(streamToRecord, {
+                mimeType: "video/webm;codecs=vp9"
+            });
+
+            mediaRecorder.ondataavailable = handleDataAvailable;
+            mediaRecorder.onstop = handleStop;
+            mediaRecorder.start();
+
+            document.getElementById('start-recording').style.display = "none";
+            document.getElementById('stop-recording').style.display = "inline-block";
+        }
+
+        // Handle data available from the MediaRecorder
+        function handleDataAvailable(event) {
+            recordedChunks.push(event.data);
+        }
+
+        // Handle stop recording event
+        function handleStop() {
+            const blob = new Blob(recordedChunks, {
+                type: "video/webm"
+            });
+            const videoURL = URL.createObjectURL(blob);
+
+            // Send recorded video to the server (for saving)
+            const formData = new FormData();
+            formData.append('video', blob, 'recording.webm');
+
+            axios.post('/save-recording', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data'
+                }
+            })
+            .then(response => {
+                console.log('Recording saved:', response.data);
+            })
+            .catch(error => {
+                console.error('Error saving recording:', error);
+            });
+
+            recordedChunks = [];
+        }
+
+        // Stop recording
+        function stopRecording() {
+            mediaRecorder.stop();
+            document.getElementById('stop-recording').style.display = "none";
+            document.getElementById('start-recording').style.display = "inline-block";
+        }
+    </script>
+</body>
+</html>
